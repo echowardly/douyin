@@ -67,7 +67,7 @@ async function main() {
     case 'watch': {
       const provider = createProvider();
       const seen = await new SeenStore().load();
-      console.log(`[watch] provider=${provider.name}/${provider.model} dryRun=${config.dryRun} targets=${resolvedTargets().join(',') || '(未配置)'}`);
+      console.log(`[watch] provider=${provider.name}/${provider.model} dryRun=${config.dryRun} style=${config.reply.style} targets=${resolvedTargets().join(',') || '(未配置)'}`);
       return withSession(async (s) => {
         let stop = false;
         process.once('SIGINT', () => (stop = true));

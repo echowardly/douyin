@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import path from 'node:path';
 import { z } from 'zod';
+import { isReplyStyle, STYLE_PROMPTS, type ReplyStyle } from './agent/styles.js';
 
 const bool = z
   .string()
@@ -27,6 +28,8 @@ const EnvSchema = z.object({
   OPENAI_BASE_URL: z.string().url().default('https://api.openai.com/v1'),
   OPENAI_MODEL: z.string().default('gpt-4o'),
 
+  /** casual | warm | terse | roast；REPLY_SYSTEM_PROMPT 非空时覆盖预设 */
+  REPLY_STYLE: z.preprocess(emptyToUndef, z.string().optional()),
   REPLY_SYSTEM_PROMPT: z.preprocess(emptyToUndef, z.string().optional()),
   VIDEO_FRAME_COUNT: z.coerce.number().int().min(1).max(32).default(6),
   ALBUM_MAX_IMAGES: z.coerce.number().int().min(1).max(35).default(9),
@@ -47,6 +50,12 @@ const EnvSchema = z.object({
 
 const env = EnvSchema.parse(process.env);
 
+const replyStyle: ReplyStyle =
+  env.REPLY_STYLE && isReplyStyle(env.REPLY_STYLE) ? env.REPLY_STYLE : 'casual';
+if (env.REPLY_STYLE && !isReplyStyle(env.REPLY_STYLE)) {
+  console.warn(`[config] 未知 REPLY_STYLE=${env.REPLY_STYLE}，回退 casual（可选：casual|warm|terse|roast）`);
+}
+
 export const config = {
   douyin: {
     targetUsers: env.DOUYIN_TARGET_USERS.split(',').map((s) => s.trim()).filter(Boolean),
@@ -65,7 +74,9 @@ export const config = {
     timeoutMs: env.LLM_TIMEOUT_MS,
   },
   reply: {
-    systemPrompt: env.REPLY_SYSTEM_PROMPT,
+    style: replyStyle,
+    /** REPLY_SYSTEM_PROMPT 非空时覆盖预设；否则用 REPLY_STYLE */
+    systemPrompt: env.REPLY_SYSTEM_PROMPT ?? STYLE_PROMPTS[replyStyle],
     videoFrameCount: env.VIDEO_FRAME_COUNT,
     /** 图集最多取几张原图喂给多模态模型 */
     albumMaxImages: env.ALBUM_MAX_IMAGES,

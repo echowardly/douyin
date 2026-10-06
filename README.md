@@ -84,6 +84,8 @@ Linux 若缺少浏览器系统依赖：`npx playwright install --with-deps chrom
 
 默认 `DRY_RUN=true`：只打印生成的回复，不真正发送。确认效果后再改成 `false`。
 
+切换回复风格：在 `.env` 设 `REPLY_STYLE=casual|warm|terse|roast`（默认 `casual`）；若填写 `REPLY_SYSTEM_PROMPT` 则覆盖预设。改完重启 `watch` 生效。
+
 ## 配置（.env）
 
 | 变量 | 默认 | 说明 |
@@ -99,7 +101,8 @@ Linux 若缺少浏览器系统依赖：`npx playwright install --with-deps chrom
 | `PROVIDER` | `grok` | `grok` 或 `openai` |
 | `GROK_API_KEY` / `GROK_BASE_URL` / `GROK_MODEL` | — / `https://api.x.ai/v1` / `grok-4` | Grok 配置（模型需支持图片输入） |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | — / `https://api.openai.com/v1` / `gpt-4o` | 任意 OpenAI 兼容接口 |
-| `REPLY_SYSTEM_PROMPT` | 内置 | 自定义回复人设/风格 |
+| `REPLY_STYLE` | `casual` | 回复风格预设：`casual` / `warm` / `terse` / `roast` |
+| `REPLY_SYSTEM_PROMPT` | — | 自定义系统提示；非空时覆盖 `REPLY_STYLE` |
 | `VIDEO_FRAME_COUNT` | `6` | 每个视频抽取的关键帧数 |
 | `ALBUM_MAX_IMAGES` | `9` | 分享图集最多取几张原图 |
 | `VIDEO_MAX_MB` | `80` | 分享视频下载上限（自动选最小码率 mp4） |

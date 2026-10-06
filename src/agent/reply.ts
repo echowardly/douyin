@@ -4,11 +4,6 @@ import { describeMedia, mediaToParts } from '../douyin/media.js';
 import type { DouyinMessage } from '../douyin/messages.js';
 import type { ChatMessage, LLMProvider } from '../providers/types.js';
 
-const DEFAULT_SYSTEM = `你是在抖音私信里陪朋友聊天的人，正在回复对方发来的消息。
-- 用自然、口语化的中文，简短（通常 1~3 句），像真人一样，不要用列表或 Markdown。
-- 如果对方分享了视频/图集，结合内容描述给出有观点、有梗的回应。
-- 不要暴露你是 AI 或机器人；不确定的内容不要编造。`;
-
 const KIND_LABEL: Record<DouyinMessage['kind'], string> = {
   text: '文字',
   image: '图片',
@@ -46,7 +41,7 @@ export async function generateReply(
     .join('\n');
   const incomingText = (await Promise.all(incoming.map((m) => renderMessage(provider, context, m)))).join('\n\n');
   const messages: ChatMessage[] = [
-    { role: 'system', content: config.reply.systemPrompt ?? DEFAULT_SYSTEM },
+    { role: 'system', content: config.reply.systemPrompt },
     {
       role: 'user',
       content: `最近聊天记录：\n${historyText || '(无)'}\n\n对方刚发来的新消息：\n${incomingText}\n\n请直接给出我要发送的回复内容。`,
