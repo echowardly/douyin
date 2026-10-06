@@ -5,9 +5,8 @@
 
 LLM 同时支持 **Grok（xAI）** 和 **任意 OpenAI 兼容接口**，通过环境变量切换。
 
-> ⚠️ 当前为 **脚手架阶段**：项目结构、登录、LLM 调用、视频抽帧、去重、轮询循环已可运行；
-> **抖音私信页的 DOM 选择器尚未在真实页面验证**（见 `src/douyin/messages.ts` 中的 `TODO(probe)`）。
-> 下一步是登录后执行 `npm run probe` 抓取真实 DOM / 接口，再补全选择器。
+> ✅ 2026-10-06 已在真实私信页完成 probe，并写入 `SELECTORS`（会话列表 / 消息气泡 / 输入框 / 发送按钮）。
+> 默认 `DRY_RUN=true`。视频/图集分享目前用**封面图**做多模态理解；真实 `play_addr` 仍待作品页解析。
 
 ## 工作原理
 
@@ -36,7 +35,7 @@ src/
   douyin/
     browser.ts              启动持久化 Chromium、登录态检测
     login.ts                打开抖音，等待扫码登录
-    messages.ts             会话列表 / 读消息 / 发消息 / probe（选择器待探测）
+    messages.ts             会话列表 / 读消息 / 发消息 / probe（选择器已按真实 DOM 填充）
     media.ts                媒体下载、视频抽帧、多模态理解
   agent/
     reply.ts                构造 prompt 并调用模型生成回复
@@ -73,7 +72,7 @@ Linux 若缺少浏览器系统依赖：`npx playwright install --with-deps chrom
 | 命令 | 作用 |
 | --- | --- |
 | `npm run login` | 扫码登录并保存登录态 |
-| `npm run probe` | 打开私信页 30 秒（可手动点开会话），把 HTML、截图、私信相关 JSON 响应保存到 `data/probe/<时间>/`，用于确定选择器 |
+| `npm run probe` | 打开私信页、自动点开第一个会话，保存 HTML/截图/接口响应与 `summary.json` 到 `data/probe/<时间>/` |
 | `npm run once` | 扫描一次目标会话并回复 |
 | `npm run watch` | 持续轮询自动回复（Ctrl+C 退出） |
 | `npm run build && npm start` | 编译后以 `watch` 模式运行 |
@@ -111,9 +110,9 @@ Linux 若缺少浏览器系统依赖：`npx playwright install --with-deps chrom
 
 ## 路线图 / TODO
 
-- [ ] **登录 + `npm run probe` 抓取私信页 DOM 与接口**，补全 `SELECTORS`（会话项、未读角标、消息项、是否自己发送、输入框、发送按钮）
-- [ ] 视频/图集分享卡片：打开作品页拦截真实媒体地址（`play_addr` / 图集图片列表）
-- [ ] 考虑改为监听私信接口 JSON（`page.on('response')`）而非解析 DOM，更稳定
+- [x] 登录 + `npm run probe` 抓取私信页 DOM，补全 `SELECTORS`（2026-10-06）
+- [ ] 视频/图集分享卡片：打开作品页或解析 `multi/aweme/detail` 拿真实 `play_addr` / 图集列表（当前只用封面）
+- [ ] 解码 `imapi.douyin.com` protobuf（`get_by_conversation` / `get_message_by_init`）替代 DOM 解析
 - [ ] 语音消息、视频音轨转写（Whisper 等）
 - [ ] 每个会话的长期记忆 / 人设
 - [ ] 回复频率限制、夜间静默、人工接管开关

@@ -5,24 +5,29 @@ import { config } from '../config.js';
 import { humanDelay } from './browser.js';
 
 /**
- * ⚠️ 以下所有选择器均为【占位符】，尚未在真实抖音网页版上验证。
- * 下一步：npm run login 后执行 npm run probe，抓取私信页 DOM / 网络请求，
- * 再把真实选择器填进 SELECTORS。抖音前端改版频繁，类名多为哈希，
- * 优先用 role / 文本 / data-e2e 属性定位。
+ * 选择器来自 2026-10-06 真实私信页 probe（data/probe/2026-10-06T01-08-36-225Z-open）。
+ * 抖音前端类名多为 CSS Modules 哈希拼接（如 conversationConversationItemtitle），
+ * 优先保留 data-e2e；类名选择器在改版后可能失效，需重新 probe。
  */
 export const SELECTORS = {
-  // TODO(probe): 左侧会话列表的每一项
+  /** 左侧会话列表每一项 */
   conversationItem: '[data-e2e="conversation-item"]',
-  // TODO(probe): 会话项中的对方昵称
-  conversationName: '[data-e2e="conversation-name"]',
-  // TODO(probe): 会话项上的未读角标
-  conversationUnread: '[data-e2e="conversation-unread"]',
-  // TODO(probe): 右侧消息流中的单条消息
-  messageItem: '[data-e2e="message-item"]',
-  // TODO(probe): 输入框（多半是 contenteditable）
-  input: '[contenteditable="true"]',
-  // TODO(probe): 发送按钮（也可能直接回车发送）
-  sendButton: '[data-e2e="send-button"]',
+  /** 会话项中的对方昵称 */
+  conversationName: '.conversationConversationItemtitle',
+  /** 会话项未读角标数字 */
+  conversationUnread: '.ConversationItemUnReadCountdigitsNumberPop, .semi-badge-count',
+  /** 右侧消息流中的单条消息容器（含头像/时间/内容） */
+  messageItem: '.messageMessageBoxmessageBox',
+  /** 单条消息的可点击内容区 */
+  messageContent: '[data-e2e="msg-item-content"]',
+  /** 「自己发送」标记（挂在 contentBox / columnBox 上） */
+  messageFromSelf: '.messageMessageBoxisFromMe, .MessageBoxContentisFromMe',
+  /** 输入区容器 */
+  inputContainer: '[data-e2e="msg-input"]',
+  /** 输入框（Slate contenteditable） */
+  input: '[data-e2e="msg-input"] [contenteditable="true"], .messageEditorinputArea[contenteditable="true"]',
+  /** 发送按钮（圆形上箭头；有内容时才可点） */
+  sendButton: '.messageMsgInputpublishBtn, .e2e-send-msg-btn',
 } as const;
 
 export type MessageKind =
@@ -37,9 +42,9 @@ export type MessageKind =
 
 export interface MediaRef {
   type: 'image' | 'video';
-  /** 资源地址（CDN）或页面地址；视频分享卡片通常只有作品页链接 */
+  /** 资源地址（CDN）或页面地址；视频分享卡片通常只有封面图，真实 play_addr 待作品页解析 */
   url: string;
-  /** 作品 id（若能从卡片解析到） */
+  /** 作品 id（若能从卡片/接口解析到） */
   awemeId?: string;
 }
 
@@ -70,9 +75,10 @@ export async function openChat(page: Page): Promise<void> {
   }
 }
 
-/** 列出会话。TODO(probe): 选择器未验证；找不到时返回空数组并告警。 */
+/** 列出会话。选择器已按 2026-10-06 probe 验证。 */
 export async function listConversations(page: Page): Promise<Conversation[]> {
   await openChat(page);
+  await page.locator(SELECTORS.conversationItem).first().waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {});
   const items = page.locator(SELECTORS.conversationItem);
   const n = await items.count();
   if (n === 0) {
@@ -82,76 +88,161 @@ export async function listConversations(page: Page): Promise<Conversation[]> {
   const out: Conversation[] = [];
   for (let i = 0; i < n; i++) {
     const item = items.nth(i);
-    const name = (await item.locator(SELECTORS.conversationName).first().textContent().catch(() => null))?.trim() ?? '';
+    const name =
+      (await item.locator(SELECTORS.conversationName).first().textContent().catch(() => null))?.trim() ?? '';
     const unreadText = await item.locator(SELECTORS.conversationUnread).first().textContent().catch(() => null);
-    out.push({ id: name || `idx-${i}`, name, unread: Number(unreadText?.trim()) || 0, index: i });
+    const unreadRaw = unreadText?.trim() ?? '';
+    const unread = unreadRaw === '' ? 0 : Number(unreadRaw.replace(/\D/g, '')) || (unreadRaw ? 1 : 0);
+    out.push({ id: name || `idx-${i}`, name, unread, index: i });
   }
   return out;
 }
 
 export async function openConversation(page: Page, conv: Conversation): Promise<void> {
   await page.locator(SELECTORS.conversationItem).nth(conv.index).click();
+  await page.locator(SELECTORS.messageItem).first().waitFor({ state: 'attached', timeout: 10_000 }).catch(() => {});
   await humanDelay();
 }
 
+type RawMsg = {
+  index: number;
+  timeLabel: string;
+  fromSelf: boolean;
+  text: string;
+  imgs: string[];
+  videos: string[];
+  links: string[];
+  hasShareAweme: boolean;
+  hasPhotosTag: boolean;
+  hasPlayIcon: boolean;
+  hasEmojiSticker: boolean;
+  hasUnsupported: boolean;
+  hasFiltered: boolean;
+  authorName: string;
+  html: string;
+};
+
 /**
  * 读取当前打开会话的消息。
- * TODO(probe): 需要确定每条消息的 id、发送者、是否自己发送、以及各类型卡片的 DOM 结构。
- * 更稳妥的方案可能是监听 page.on('response') 中的私信接口 JSON，而不是解析 DOM。
+ * 依据 probe 得到的 DOM：`.messageMessageBoxmessageBox` + `isFromMe` + 各类 MessageItem* 卡片。
+ * IM 接口（imapi.douyin.com）返回 protobuf，暂以 DOM 为主；后续可解码 protobuf 更稳。
  */
 export async function readMessages(page: Page, conv: Conversation): Promise<DouyinMessage[]> {
-  const items = page.locator(SELECTORS.messageItem);
-  const n = await items.count();
-  const out: DouyinMessage[] = [];
-  for (let i = 0; i < n; i++) {
-    const el = items.nth(i);
-    const raw = await el.evaluate((node) => {
-      const imgs = Array.from(node.querySelectorAll('img')).map((x) => (x as HTMLImageElement).src);
-      const videos = Array.from(node.querySelectorAll('video')).map((x) => (x as HTMLVideoElement).currentSrc || (x as HTMLVideoElement).src);
-      const links = Array.from(node.querySelectorAll('a')).map((x) => (x as HTMLAnchorElement).href);
+  const raws = await page.evaluate((sel) => {
+    const boxes = Array.from(document.querySelectorAll(sel.messageItem));
+    return boxes.map((node, index) => {
+      const el = node as HTMLElement;
+      const fromSelf = Boolean(el.querySelector(sel.messageFromSelf));
+      const content = (el.querySelector(sel.messageContent) as HTMLElement | null) ?? el;
+      const timeLabel = (el.querySelector('.MessageBoxTimetimeLayout') as HTMLElement | null)?.innerText?.trim() ?? '';
+      const textEl = content.querySelector('.TextMessageTexttextInnerContent, .MessageItemTextbubbleTextContent');
+      let text = (textEl as HTMLElement | null)?.innerText?.trim() ?? '';
+      // 文本气泡里的 emoji 用 title="[哈欠]"；无纯文字时拼 title
+      if (!text) {
+        const titles = Array.from(content.querySelectorAll('.TextMessageTextemoji img[title]'))
+          .map((img) => (img as HTMLImageElement).title)
+          .filter(Boolean);
+        if (titles.length) text = titles.join('');
+      }
+      if (!text) {
+        const filtered = content.querySelector('.FilteredFilteredMessagefiltered') as HTMLElement | null;
+        if (filtered) text = filtered.innerText?.trim() ?? '';
+      }
+      if (!text) {
+        const unsup = content.querySelector('.MessageItemUnsuportunsupport') as HTMLElement | null;
+        if (unsup) text = unsup.innerText?.trim() ?? '';
+      }
+      const imgs = Array.from(content.querySelectorAll('img'))
+        .map((x) => (x as HTMLImageElement).src)
+        .filter((u) => u && !u.startsWith('data:') && !/avatar|aweme-avatar|flame_icon|emoji/i.test(u));
+      // 分享卡片封面（优先）
+      const cover = (content.querySelector('img.MessageItemShareAwemeawemeContainer') as HTMLImageElement | null)?.src;
+      const sticker = (content.querySelector('.MessageItemEmojiimage') as HTMLImageElement | null)?.src;
+      const videos = Array.from(content.querySelectorAll('video')).map(
+        (x) => (x as HTMLVideoElement).currentSrc || (x as HTMLVideoElement).src,
+      );
+      const links = Array.from(content.querySelectorAll('a')).map((x) => (x as HTMLAnchorElement).href);
+      const authorName =
+        (content.querySelector('.MessageItemShareAwemeauthorName') as HTMLElement | null)?.innerText?.trim() ?? '';
       return {
-        id: (node as HTMLElement).dataset['id'] ?? '',
-        text: (node as HTMLElement).innerText ?? '',
-        imgs,
+        index,
+        timeLabel,
+        fromSelf,
+        text,
+        imgs: cover ? [cover, ...imgs.filter((u) => u !== cover)] : imgs,
         videos,
         links,
-        // TODO(probe): 判断“自己发送”的真实依据（左右对齐 / class / data 属性）
-        fromSelf: (node as HTMLElement).className.includes('self'),
-        html: (node as HTMLElement).outerHTML.slice(0, 4000),
+        hasShareAweme: Boolean(content.querySelector('.MessageItemShareAwemecontainer')),
+        hasPhotosTag: Boolean(content.querySelector('.MessageItemShareAwemephotosTag')),
+        hasPlayIcon: Boolean(content.querySelector('.MessageItemShareAwemeplayIcon')),
+        hasEmojiSticker: Boolean(content.querySelector('.MessageItemEmojiemojiBox')),
+        hasUnsupported: Boolean(content.querySelector('.MessageItemUnsuportunsupport')),
+        hasFiltered: Boolean(content.querySelector('.FilteredFilteredMessagefiltered')),
+        authorName,
+        html: el.outerHTML.slice(0, 4000),
       };
     });
-    out.push(classify(conv, i, raw));
-  }
-  return out;
+  }, {
+    messageItem: SELECTORS.messageItem,
+    messageContent: SELECTORS.messageContent,
+    messageFromSelf: SELECTORS.messageFromSelf,
+  });
+
+  return (raws as RawMsg[]).map((r) => classify(conv, r));
 }
 
-/** 依据卡片内容粗分消息类型。TODO(probe): 用真实卡片结构替换这些启发式规则。 */
-function classify(
-  conv: Conversation,
-  i: number,
-  r: { id: string; text: string; imgs: string[]; videos: string[]; links: string[]; fromSelf: boolean; html: string },
-): DouyinMessage {
+/** 依据卡片内容粗分消息类型（规则来自 2026-10-06 真实 DOM）。 */
+function classify(conv: Conversation, r: RawMsg): DouyinMessage {
   const awemeLink = r.links.find((l) => /douyin\.com\/(video|note)\//.test(l));
   const awemeId = awemeLink?.match(/\/(video|note)\/(\d+)/)?.[2];
   let kind: MessageKind = 'unknown';
   const media: MediaRef[] = [];
-  if (r.videos.length || awemeLink?.includes('/video/')) {
+
+  if (r.hasShareAweme) {
+    // 图集带 photosTag（即便也有 playIcon）；纯视频只有 playIcon。封面先当 image 喂多模态。
+    kind = r.hasPhotosTag ? 'image_album' : 'video';
+    const cover = r.imgs[0];
+    if (cover) {
+      // 封面按 image 下载，避免把 jpeg 封面当 mp4 抽帧失败
+      media.push({ type: 'image', url: cover, awemeId });
+    }
+    if (awemeLink) media.push({ type: kind === 'image_album' ? 'image' : 'video', url: awemeLink, awemeId });
+    if (r.authorName && !r.text) r.text = `分享了@${r.authorName}的作品`;
+    else if (r.authorName) r.text = `${r.text}（@${r.authorName}）`;
+  } else if (r.videos.length || awemeLink?.includes('/video/')) {
     kind = 'video';
     media.push(...(r.videos.length ? r.videos : [awemeLink!]).map((url) => ({ type: 'video' as const, url, awemeId })));
   } else if (awemeLink?.includes('/note/')) {
     kind = 'image_album';
     media.push({ type: 'image', url: awemeLink, awemeId });
     media.push(...r.imgs.map((url) => ({ type: 'image' as const, url, awemeId })));
+  } else if (r.hasEmojiSticker) {
+    kind = 'sticker';
+    if (r.imgs[0] || r.imgs.length === 0) {
+      const stickerImg = r.imgs[0];
+      // sticker src 可能被 avatar 过滤掉了，从 html 里不再二次取；有则作为 image
+      if (stickerImg) media.push({ type: 'image', url: stickerImg });
+    }
   } else if (r.imgs.length && !r.text.trim()) {
     kind = r.imgs.length > 1 ? 'image_album' : 'image';
     media.push(...r.imgs.map((url) => ({ type: 'image' as const, url })));
-  } else if (r.links.length) {
+  } else if (r.hasUnsupported || r.hasFiltered) {
+    kind = 'unknown';
+  } else if (r.links.length && !r.text.trim()) {
     kind = 'link';
   } else if (r.text.trim()) {
     kind = 'text';
   }
+
+  // sticker：上面 imgs 过滤掉了 emoji CDN，补抓
+  if (kind === 'sticker' && !media.length) {
+    const m = r.html.match(/MessageItemEmojiimage[^>]*src="([^"]+)"/);
+    if (m?.[1]) media.push({ type: 'image', url: m[1].replace(/&amp;/g, '&') });
+  }
+
+  const idSeed = [conv.id, r.fromSelf ? 'me' : 'them', kind, r.timeLabel, r.text, media[0]?.url ?? '', r.index].join('|');
   return {
-    id: r.id || `${conv.id}#${i}#${hash(r.html)}`,
+    id: `${conv.id}#${hash(idSeed)}`,
     conversationId: conv.id,
     senderName: r.fromSelf ? '(me)' : conv.name,
     fromSelf: r.fromSelf,
@@ -168,11 +259,14 @@ function hash(s: string): string {
   return (h >>> 0).toString(36);
 }
 
-/** 在当前会话发送文本回复。TODO(probe): 确认输入框与发送方式（回车 / 按钮）。 */
+/** 在当前会话发送文本回复。输入框为 Slate contenteditable；优先点发送按钮，否则回车。 */
 export async function sendReply(page: Page, text: string): Promise<void> {
   const input = page.locator(SELECTORS.input).last();
   await input.click();
   await humanDelay(300, 300);
+  // Slate 编辑器：先全选清空再输入，避免残留零宽字符
+  await page.keyboard.press('Control+A');
+  await page.keyboard.press('Backspace');
   await input.pressSequentially(text, { delay: 40 + Math.random() * 60 });
   await humanDelay(300, 400);
   const btn = page.locator(SELECTORS.sendButton);
@@ -180,23 +274,50 @@ export async function sendReply(page: Page, text: string): Promise<void> {
   else await page.keyboard.press('Enter');
 }
 
-/** 探测：保存私信页 HTML、截图、以及私信相关接口响应，用于确定真实选择器。 */
-export async function probe(page: Page, waitMs = 30_000): Promise<string> {
+/** 探测：保存私信页 HTML、截图、以及私信相关接口响应；会自动点开第一个会话以抓消息 DOM。 */
+export async function probe(page: Page, waitMs = 20_000): Promise<string> {
   const dir = path.join(config.dataDir, 'probe', new Date().toISOString().replace(/[:.]/g, '-'));
   await fs.mkdir(dir, { recursive: true });
   let n = 0;
   page.on('response', async (res) => {
     const url = res.url();
-    if (!/im|message|conversation|chat/i.test(url)) return;
+    if (!/im|message|conversation|chat|msg|inbox|stranger|aweme\/detail/i.test(url)) return;
     const ct = res.headers()['content-type'] ?? '';
-    if (!ct.includes('json')) return;
+    if (!/json|protobuf|octet|text/.test(ct)) return;
     const body = await res.text().catch(() => '');
-    await fs.writeFile(path.join(dir, `resp-${String(++n).padStart(3, '0')}.json`), JSON.stringify({ url, body }, null, 2));
+    if (!body || body.length < 2) return;
+    await fs.writeFile(
+      path.join(dir, `resp-${String(++n).padStart(3, '0')}.json`),
+      JSON.stringify({ url, ct, body: body.slice(0, 500_000) }, null, 2),
+    );
   });
   await page.goto(config.douyin.chatUrl, { waitUntil: 'domcontentloaded' });
-  console.log(`[probe] 已打开私信页，${waitMs / 1000}s 内可手动点开会话，网络响应会被记录……`);
+  await humanDelay(2500, 1000);
+  await fs.writeFile(path.join(dir, 'list.html'), await page.content());
+  await page.screenshot({ path: path.join(dir, 'list.png'), fullPage: true });
+
+  const items = page.locator(SELECTORS.conversationItem);
+  const count = await items.count();
+  console.log(`[probe] 会话数=${count}，将自动点开第一个并等待 ${waitMs / 1000}s……`);
+  if (count > 0) {
+    await items.first().click();
+    await humanDelay(3000, 1000);
+  }
   await page.waitForTimeout(waitMs);
   await fs.writeFile(path.join(dir, 'page.html'), await page.content());
   await page.screenshot({ path: path.join(dir, 'page.png'), fullPage: true });
+  // 结构化 DOM 摘要，方便下次改选择器
+  const summary = await page.evaluate((sel) => {
+    const e2e = [...new Set(Array.from(document.querySelectorAll('[data-e2e]')).map((el) => el.getAttribute('data-e2e')))];
+    return {
+      e2e,
+      conversations: document.querySelectorAll(sel.conversationItem).length,
+      messages: document.querySelectorAll(sel.messageItem).length,
+      inputs: document.querySelectorAll(sel.input).length,
+      sendButtons: document.querySelectorAll(sel.sendButton).length,
+    };
+  }, SELECTORS);
+  await fs.writeFile(path.join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
+  console.log('[probe] summary', summary);
   return dir;
 }
