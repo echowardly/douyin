@@ -17,7 +17,10 @@ async function runOnce(session: Session, provider: LLMProvider, seen: SeenStore)
     console.warn('[once] 没有可用的目标用户：DOUYIN_TARGET_USERS=self 时请设置 DOUYIN_OWNER_NAME');
     return;
   }
-  const convs = (await listConversations(session.page)).filter((c) => isTarget(c.name, targets));
+  const allConvs = await listConversations(session.page);
+  const convs = allConvs.filter((c) => isTarget(c.name, targets));
+  console.log(`[once] 会话 ${allConvs.length}，命中目标 ${convs.length}（${convs.map((c) => c.name).join(', ') || '无'}）dryRun=${config.dryRun}`);
+  let replied = 0;
   for (const conv of convs) {
     await openConversation(session.page, conv);
     const msgs = await readMessages(session.page, conv);
@@ -25,14 +28,18 @@ async function runOnce(session: Session, provider: LLMProvider, seen: SeenStore)
     if (!fresh.length) continue;
     console.log(`[once] ${conv.name}: ${fresh.length} 条新消息 (${fresh.map((m) => m.kind).join(', ')})`);
     const reply = await generateReply(provider, session.context, msgs, fresh);
-    if (config.dryRun) console.log(`[dry-run] 回复 ${conv.name} → ${reply}`);
-    else {
+    if (config.dryRun) {
+      console.log(`[dry-run] 回复 ${conv.name} → ${reply}`);
+      // dry-run 不写入 seen，避免正式跑时跳过这些消息
+    } else {
       await sendReply(session.page, reply);
       console.log(`[sent] ${conv.name} ← ${reply}`);
+      fresh.forEach((m) => seen.add(m.id));
+      await seen.save();
     }
-    fresh.forEach((m) => seen.add(m.id));
-    await seen.save();
+    replied += 1;
   }
+  console.log(`[once] 本轮完成：处理会话 ${replied}/${convs.length}`);
 }
 
 async function withSession<T>(fn: (s: Session) => Promise<T>): Promise<T> {
