@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+# 浏览器登录态（含 cookie，切勿提交）
+.douyin-profile/
+# 运行数据：下载的媒体、已处理消息记录、DOM 快照
+data/
+*.log
+.DS_Store
