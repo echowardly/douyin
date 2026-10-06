@@ -26,8 +26,8 @@ export async function renderMessage(provider: LLMProvider, context: BrowserConte
 
 /**
  * 根据最近的会话上下文 + 新消息生成回复。
- * @param history 最近若干条（含自己发的），按时间顺序
- * @param incoming 需要回复的新消息（对方发的）
+ * @param history 窗口之前的少量上下文（纯文本，不做媒体理解），按时间顺序；可为空
+ * @param incoming 需要回复的新消息（我上次发言之后对方发的），只有这些会走媒体理解
  */
 export async function generateReply(
   provider: LLMProvider,
@@ -36,7 +36,6 @@ export async function generateReply(
   incoming: DouyinMessage[],
 ): Promise<string> {
   const historyText = history
-    .slice(-10)
     .map((m) => `【${m.fromSelf ? '我' : m.senderName}·${KIND_LABEL[m.kind]}】${m.text ?? ''}`)
     .join('\n');
   const incomingText = (await Promise.all(incoming.map((m) => renderMessage(provider, context, m)))).join('\n\n');

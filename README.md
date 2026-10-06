@@ -12,15 +12,15 @@ LLM 同时支持 **Grok（xAI）** 和 **任意 OpenAI 兼容接口**，通过�
 
 ```
 Playwright 持久化浏览器（保存登录态）
-   └─ 打开私信页 → 列出会话 → 过滤目标用户 → 读取新消息
+   └─ 打开私信页 → 列出会话 → 过滤目标用户 → 只取「我上次发言之后」的对方消息（更早的历史不读不回）
          ├─ 文字 / 链接 / 表情：直接解析
          ├─ 图片：下载 → base64 → 多模态模型理解
          ├─ 分享卡片：fiber 取 aweme_id → 作品详情（嗅探私信页 multi/aweme/detail，兜底页面内签名请求）
          │    ├─ 图集：下载前 ALBUM_MAX_IMAGES 张原图 → 多模态模型理解
          │    └─ 视频：下载最小码率 mp4 → ffmpeg 抽 N 帧 + 抽音轨转写 → 多模态模型理解
          └─ 视频：下载 → ffmpeg 抽 N 帧 + 抽音轨转写 → 多模态模型理解
-   └─ 拼接「最近聊天 + 新消息 + 媒体内容理解」→ LLM 生成回复 → 输入框模拟打字发送
-   └─ 已处理消息 id 记录在 data/seen.json，避免重复回复
+   └─ 拼接「少量纯文本上下文 + 新消息 + 媒体内容理解」→ LLM 生成回复 → 输入框模拟打字发送
+   └─ 已处理消息 id 记录在 data/seen.json，在同一窗口内去重
 ```
 
 ## 目录结构
@@ -84,6 +84,10 @@ Linux 若缺少浏览器系统依赖：`npx playwright install --with-deps chrom
 
 默认 `DRY_RUN=true`：只打印生成的回复，不真正发送。确认效果后再改成 `false`。
 
+**回复范围**：每个会话只回复「我最后一条消息之后」对方发来的消息；更早的历史不会下载媒体、不会理解、不会回复，
+所以全新启动（`seen.json` 为空）也不会去回老消息。只有新消息才走视频/图集/音轨理解；之前的 `REPLY_CONTEXT_MESSAGES` 条只以纯文本附作上下文。
+若可见范围内根本没有我的发言（全新会话），最多只取最近 `REPLY_MAX_INCOMING` 条。
+
 切换回复风格：在 `.env` 设 `REPLY_STYLE=casual|warm|terse|roast`（默认 `casual`）；若填写 `REPLY_SYSTEM_PROMPT` 则覆盖预设。改完重启 `watch` 生效。
 
 ## 配置（.env）
@@ -103,6 +107,8 @@ Linux 若缺少浏览器系统依赖：`npx playwright install --with-deps chrom
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | — / `https://api.openai.com/v1` / `gpt-4o` | 任意 OpenAI 兼容接口 |
 | `REPLY_STYLE` | `casual` | 回复风格预设：`casual` / `warm` / `terse` / `roast` |
 | `REPLY_SYSTEM_PROMPT` | — | 自定义系统提示；非空时覆盖 `REPLY_STYLE` |
+| `REPLY_MAX_INCOMING` | `10` | 可见范围内没有我的发言时，最多回复最近几条对方消息 |
+| `REPLY_CONTEXT_MESSAGES` | `4` | 窗口之前额外带几条纯文本上下文（不做媒体理解）；`0` = 不带 |
 | `VIDEO_FRAME_COUNT` | `6` | 每个视频抽取的关键帧数 |
 | `ALBUM_MAX_IMAGES` | `9` | 分享图集最多取几张原图 |
 | `VIDEO_MAX_MB` | `80` | 分享视频下载上限（自动选最小码率 mp4） |

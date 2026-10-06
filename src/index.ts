@@ -1,5 +1,6 @@
 import { config, resolvedTargets } from './config.js';
 import { generateReply } from './agent/reply.js';
+import { selectReplyWindow } from './agent/window.js';
 import { isLoggedIn, launchSession, type Session } from './douyin/browser.js';
 import { login } from './douyin/login.js';
 import { listConversations, openConversation, probe, readMessages, sendReply } from './douyin/messages.js';
@@ -24,10 +25,17 @@ async function runOnce(session: Session, provider: LLMProvider, seen: SeenStore)
   for (const conv of convs) {
     await openConversation(session.page, conv);
     const msgs = await readMessages(session.page, conv);
-    const fresh = msgs.filter((m) => !m.fromSelf && !seen.has(m.id));
+    // 只看「我上次发言之后」的对方消息；更早的历史不读、不下载媒体、不回复
+    const { incoming: fresh, context, lastSelfIndex } = selectReplyWindow(msgs, (id) => seen.has(id), {
+      maxIncoming: config.reply.maxIncoming,
+      contextSize: config.reply.contextMessages,
+    });
     if (!fresh.length) continue;
-    console.log(`[once] ${conv.name}: ${fresh.length} 条新消息 (${fresh.map((m) => m.kind).join(', ')})`);
-    const reply = await generateReply(provider, session.context, msgs, fresh);
+    console.log(
+      `[once] ${conv.name}: ${fresh.length} 条新消息 (${fresh.map((m) => m.kind).join(', ')})` +
+        (lastSelfIndex < 0 ? `（可见范围内无我的发言，仅取最近 ${config.reply.maxIncoming} 条）` : ''),
+    );
+    const reply = await generateReply(provider, session.context, context, fresh);
     if (config.dryRun) {
       console.log(`[dry-run] 回复 ${conv.name} → ${reply}`);
       // dry-run 不写入 seen，避免正式跑时跳过这些消息

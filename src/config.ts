@@ -31,6 +31,10 @@ const EnvSchema = z.object({
   /** casual | warm | terse | roast；REPLY_SYSTEM_PROMPT 非空时覆盖预设 */
   REPLY_STYLE: z.preprocess(emptyToUndef, z.string().optional()),
   REPLY_SYSTEM_PROMPT: z.preprocess(emptyToUndef, z.string().optional()),
+  /** 可见范围内没有自己的发言时，最多回复最近几条对方消息 */
+  REPLY_MAX_INCOMING: z.coerce.number().int().min(1).max(50).default(10),
+  /** 额外附带窗口之前几条消息作纯文本上下文（不做媒体理解）；0 = 不带 */
+  REPLY_CONTEXT_MESSAGES: z.coerce.number().int().min(0).max(30).default(4),
   VIDEO_FRAME_COUNT: z.coerce.number().int().min(1).max(32).default(6),
   ALBUM_MAX_IMAGES: z.coerce.number().int().min(1).max(35).default(9),
   VIDEO_MAX_MB: z.coerce.number().positive().default(80),
@@ -77,6 +81,8 @@ export const config = {
     style: replyStyle,
     /** REPLY_SYSTEM_PROMPT 非空时覆盖预设；否则用 REPLY_STYLE */
     systemPrompt: env.REPLY_SYSTEM_PROMPT ?? STYLE_PROMPTS[replyStyle],
+    maxIncoming: env.REPLY_MAX_INCOMING,
+    contextMessages: env.REPLY_CONTEXT_MESSAGES,
     videoFrameCount: env.VIDEO_FRAME_COUNT,
     /** 图集最多取几张原图喂给多模态模型 */
     albumMaxImages: env.ALBUM_MAX_IMAGES,
