@@ -42,10 +42,14 @@ export type MessageKind =
 
 export interface MediaRef {
   type: 'image' | 'video';
-  /** 资源地址（CDN）或页面地址；视频分享卡片通常只有封面图，真实 play_addr 待作品页解析 */
+  /** 资源地址（CDN）；分享卡片为作品页地址 https://www.douyin.com/{video|note}/{awemeId} */
   url: string;
-  /** 作品 id（若能从卡片/接口解析到） */
+  /** 作品 id（分享卡片从 React fiber `message.parsedContent.itemId` 取） */
   awemeId?: string;
+  /** 分享卡片：由 aweme.ts 解析出真实视频 / 图集原图 */
+  share?: 'video' | 'album';
+  /** 卡片封面（解析失败时兜底用） */
+  cover?: string;
 }
 
 export interface DouyinMessage {
@@ -119,6 +123,8 @@ type RawMsg = {
   hasUnsupported: boolean;
   hasFiltered: boolean;
   authorName: string;
+  /** 分享卡片的作品 id（React fiber） */
+  itemId: string;
   html: string;
 };
 
@@ -164,6 +170,19 @@ export async function readMessages(page: Page, conv: Conversation): Promise<Douy
       const links = Array.from(content.querySelectorAll('a')).map((x) => (x as HTMLAnchorElement).href);
       const authorName =
         (content.querySelector('.MessageItemShareAwemeauthorName') as HTMLElement | null)?.innerText?.trim() ?? '';
+      // 分享卡片 DOM 不带链接；aweme_id 在 React fiber 的 props.message.parsedContent.itemId（2026-10-06 probe）
+      // 注意：这里不要写具名内部函数（tsx 会注入 __name，浏览器里未定义）
+      let itemId = '';
+      const card = content.querySelector('.MessageItemShareAwemecontainer');
+      if (card) {
+        const fk = Object.keys(card).find((k) => k.startsWith('__reactFiber'));
+        let f = fk ? (card as unknown as Record<string, any>)[fk] : null;
+        for (let d = 0; f && d < 20 && !itemId; d++, f = f.return) {
+          const pc = f.memoizedProps?.message?.parsedContent;
+          const id = pc?.itemId ?? pc?.aweme_id ?? pc?.awemeId ?? f.memoizedProps?.awemeId;
+          if (id && /^\d{8,}$/.test(String(id))) itemId = String(id);
+        }
+      }
       return {
         index,
         timeLabel,
@@ -179,6 +198,7 @@ export async function readMessages(page: Page, conv: Conversation): Promise<Douy
         hasUnsupported: Boolean(content.querySelector('.MessageItemUnsuportunsupport')),
         hasFiltered: Boolean(content.querySelector('.FilteredFilteredMessagefiltered')),
         authorName,
+        itemId,
         html: el.outerHTML.slice(0, 4000),
       };
     });
@@ -194,28 +214,37 @@ export async function readMessages(page: Page, conv: Conversation): Promise<Douy
 /** 依据卡片内容粗分消息类型（规则来自 2026-10-06 真实 DOM）。 */
 function classify(conv: Conversation, r: RawMsg): DouyinMessage {
   const awemeLink = r.links.find((l) => /douyin\.com\/(video|note)\//.test(l));
-  const awemeId = awemeLink?.match(/\/(video|note)\/(\d+)/)?.[2];
+  const awemeId = r.itemId || awemeLink?.match(/\/(video|note)\/(\d+)/)?.[2];
   let kind: MessageKind = 'unknown';
   const media: MediaRef[] = [];
 
   if (r.hasShareAweme) {
-    // 图集带 photosTag（即便也有 playIcon）；纯视频只有 playIcon。封面先当 image 喂多模态。
+    // 图集带 photosTag（即便也有 playIcon）；纯视频只有 playIcon。
     kind = r.hasPhotosTag ? 'image_album' : 'video';
     const cover = r.imgs[0];
-    if (cover) {
-      // 封面按 image 下载，避免把 jpeg 封面当 mp4 抽帧失败
-      media.push({ type: 'image', url: cover, awemeId });
+    if (awemeId) {
+      // 交给 aweme.ts 解析真实 play_addr / 图集原图；封面仅作兜底
+      const share = kind === 'image_album' ? 'album' : 'video';
+      media.push({
+        type: share === 'album' ? 'image' : 'video',
+        url: `https://www.douyin.com/${share === 'album' ? 'note' : 'video'}/${awemeId}`,
+        awemeId,
+        share,
+        cover,
+      });
+    } else if (cover) {
+      // 拿不到作品 id：退回封面按 image 下载
+      media.push({ type: 'image', url: cover });
     }
-    if (awemeLink) media.push({ type: kind === 'image_album' ? 'image' : 'video', url: awemeLink, awemeId });
     if (r.authorName && !r.text) r.text = `分享了@${r.authorName}的作品`;
     else if (r.authorName) r.text = `${r.text}（@${r.authorName}）`;
   } else if (r.videos.length || awemeLink?.includes('/video/')) {
     kind = 'video';
-    media.push(...(r.videos.length ? r.videos : [awemeLink!]).map((url) => ({ type: 'video' as const, url, awemeId })));
+    if (r.videos.length) media.push(...r.videos.map((url) => ({ type: 'video' as const, url })));
+    else media.push({ type: 'video', url: awemeLink!, awemeId, share: 'video', cover: r.imgs[0] });
   } else if (awemeLink?.includes('/note/')) {
     kind = 'image_album';
-    media.push({ type: 'image', url: awemeLink, awemeId });
-    media.push(...r.imgs.map((url) => ({ type: 'image' as const, url, awemeId })));
+    media.push({ type: 'image', url: awemeLink, awemeId, share: 'album', cover: r.imgs[0] });
   } else if (r.hasEmojiSticker) {
     kind = 'sticker';
     if (r.imgs[0] || r.imgs.length === 0) {

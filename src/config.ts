@@ -29,6 +29,8 @@ const EnvSchema = z.object({
 
   REPLY_SYSTEM_PROMPT: z.preprocess(emptyToUndef, z.string().optional()),
   VIDEO_FRAME_COUNT: z.coerce.number().int().min(1).max(32).default(6),
+  ALBUM_MAX_IMAGES: z.coerce.number().int().min(1).max(35).default(9),
+  VIDEO_MAX_MB: z.coerce.number().positive().default(80),
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(90000),
 });
 
@@ -54,6 +56,10 @@ export const config = {
   reply: {
     systemPrompt: env.REPLY_SYSTEM_PROMPT,
     videoFrameCount: env.VIDEO_FRAME_COUNT,
+    /** 图集最多取几张原图喂给多模态模型 */
+    albumMaxImages: env.ALBUM_MAX_IMAGES,
+    /** 分享视频下载体积上限（MB），超出则只用封面 */
+    videoMaxMb: env.VIDEO_MAX_MB,
   },
 } as const;
 

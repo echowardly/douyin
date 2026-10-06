@@ -6,7 +6,7 @@
 LLM 同时支持 **Grok（xAI）** 和 **任意 OpenAI 兼容接口**，通过环境变量切换。
 
 > ✅ 2026-10-06 已在真实私信页完成 probe，并写入 `SELECTORS`（会话列表 / 消息气泡 / 输入框 / 发送按钮）。
-> 默认 `DRY_RUN=true`。视频/图集分享目前用**封面图**做多模态理解；真实 `play_addr` 仍待作品页解析。
+> 默认 `DRY_RUN=true`。视频/图集分享会解析出**真实视频（最小码率 mp4 → 关键帧）和图集原图**，失败时才退回封面。
 
 ## 工作原理
 
@@ -14,7 +14,10 @@ LLM 同时支持 **Grok（xAI）** 和 **任意 OpenAI 兼容接口**，通过�
 Playwright 持久化浏览器（保存登录态）
    └─ 打开私信页 → 列出会话 → 过滤目标用户 → 读取新消息
          ├─ 文字 / 链接 / 表情：直接解析
-         ├─ 图片 / 图集：下载 → base64 → 多模态模型理解
+         ├─ 图片：下载 → base64 → 多模态模型理解
+         ├─ 分享卡片：fiber 取 aweme_id → 作品详情（嗅探私信页 multi/aweme/detail，兜底页面内签名请求）
+         │    ├─ 图集：下载前 ALBUM_MAX_IMAGES 张原图 → 多模态模型理解
+         │    └─ 视频：下载最小码率 mp4 → ffmpeg 均匀抽 N 帧 → 多模态模型理解
          └─ 视频：下载 → ffmpeg 均匀抽 N 帧 → 多模态模型理解
    └─ 拼接「最近聊天 + 新消息 + 媒体内容理解」→ LLM 生成回复 → 输入框模拟打字发送
    └─ 已处理消息 id 记录在 data/seen.json，避免重复回复
@@ -36,6 +39,7 @@ src/
     browser.ts              启动持久化 Chromium、登录态检测
     login.ts                打开抖音，等待扫码登录
     messages.ts             会话列表 / 读消息 / 发消息 / probe（选择器已按真实 DOM 填充）
+    aweme.ts                分享作品 → 真实 play_addr / 图集原图（接口嗅探 + 兜底）
     media.ts                媒体下载、视频抽帧、多模态理解
   agent/
     reply.ts                构造 prompt 并调用模型生成回复
@@ -96,6 +100,8 @@ Linux 若缺少浏览器系统依赖：`npx playwright install --with-deps chrom
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | — / `https://api.openai.com/v1` / `gpt-4o` | 任意 OpenAI 兼容接口 |
 | `REPLY_SYSTEM_PROMPT` | 内置 | 自定义回复人设/风格 |
 | `VIDEO_FRAME_COUNT` | `6` | 每个视频抽取的关键帧数 |
+| `ALBUM_MAX_IMAGES` | `9` | 分享图集最多取几张原图 |
+| `VIDEO_MAX_MB` | `80` | 分享视频下载上限（自动选最小码率 mp4） |
 | `LLM_TIMEOUT_MS` | `90000` | 单次模型请求超时 |
 
 ### 关于「回复自己」
@@ -111,7 +117,8 @@ Linux 若缺少浏览器系统依赖：`npx playwright install --with-deps chrom
 ## 路线图 / TODO
 
 - [x] 登录 + `npm run probe` 抓取私信页 DOM，补全 `SELECTORS`（2026-10-06）
-- [ ] 视频/图集分享卡片：打开作品页或解析 `multi/aweme/detail` 拿真实 `play_addr` / 图集列表（当前只用封面）
+- [x] 视频/图集分享卡片：解析 `multi/aweme/detail` 拿真实 `play_addr` / 图集原图（`src/douyin/aweme.ts`；调试：`npx tsx scripts/resolve-aweme.ts <id> [video|note]`）
+- [ ] 实况图（live photo）里的短视频、图集配乐
 - [ ] 解码 `imapi.douyin.com` protobuf（`get_by_conversation` / `get_message_by_init`）替代 DOM 解析
 - [ ] 语音消息、视频音轨转写（Whisper 等）
 - [ ] 每个会话的长期记忆 / 人设

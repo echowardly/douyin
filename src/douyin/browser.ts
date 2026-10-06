@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import { chromium, type BrowserContext, type Page } from 'playwright';
 import { config } from '../config.js';
+import { installAwemeSniffer } from './aweme.js';
 
 export interface Session {
   context: BrowserContext;
@@ -21,6 +22,8 @@ export async function launchSession(opts: { headless?: boolean } = {}): Promise<
     timezoneId: 'Asia/Shanghai',
     args: ['--disable-blink-features=AutomationControlled'],
   });
+  // 必须在打开会话前挂上：私信页会自己请求 multi/aweme/detail，顺手缓存分享作品的真实媒体地址
+  installAwemeSniffer(context);
   const page = context.pages()[0] ?? (await context.newPage());
   return { context, page, close: () => context.close() };
 }
