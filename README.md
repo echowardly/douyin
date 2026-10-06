@@ -6,7 +6,7 @@
 LLM 同时支持 **Grok（xAI）** 和 **任意 OpenAI 兼容接口**，通过环境变量切换。
 
 > ✅ 2026-10-06 已在真实私信页完成 probe，并写入 `SELECTORS`（会话列表 / 消息气泡 / 输入框 / 发送按钮）。
-> 默认 `DRY_RUN=true`。视频/图集分享会解析出**真实视频（最小码率 mp4 → 关键帧）和图集原图**，失败时才退回封面。
+> 默认 `DRY_RUN=true`。视频/图集分享会解析出**真实视频（最小码率 mp4 → 关键帧 + 音轨转写）和图集原图**，失败时才退回封面。
 
 ## 工作原理
 
@@ -17,8 +17,8 @@ Playwright 持久化浏览器（保存登录态）
          ├─ 图片：下载 → base64 → 多模态模型理解
          ├─ 分享卡片：fiber 取 aweme_id → 作品详情（嗅探私信页 multi/aweme/detail，兜底页面内签名请求）
          │    ├─ 图集：下载前 ALBUM_MAX_IMAGES 张原图 → 多模态模型理解
-         │    └─ 视频：下载最小码率 mp4 → ffmpeg 均匀抽 N 帧 → 多模态模型理解
-         └─ 视频：下载 → ffmpeg 均匀抽 N 帧 → 多模态模型理解
+         │    └─ 视频：下载最小码率 mp4 → ffmpeg 抽 N 帧 + 抽音轨转写 → 多模态模型理解
+         └─ 视频：下载 → ffmpeg 抽 N 帧 + 抽音轨转写 → 多模态模型理解
    └─ 拼接「最近聊天 + 新消息 + 媒体内容理解」→ LLM 生成回复 → 输入框模拟打字发送
    └─ 已处理消息 id 记录在 data/seen.json，避免重复回复
 ```
@@ -41,6 +41,7 @@ src/
     messages.ts             会话列表 / 读消息 / 发消息 / probe（选择器已按真实 DOM 填充）
     aweme.ts                分享作品 → 真实 play_addr / 图集原图（接口嗅探 + 兜底）
     media.ts                媒体下载、视频抽帧、多模态理解
+    transcribe.ts           视频音轨抽取 + Grok STT / OpenAI Whisper 转写
   agent/
     reply.ts                构造 prompt 并调用模型生成回复
 ```
@@ -48,7 +49,7 @@ src/
 ## 环境要求
 
 - Node.js ≥ 20
-- `ffmpeg` / `ffprobe`（视频抽帧用；Debian/Ubuntu：`sudo apt install ffmpeg`，macOS：`brew install ffmpeg`）
+- `ffmpeg` / `ffprobe`（视频抽帧与音轨抽取；Debian/Ubuntu：`sudo apt install ffmpeg`，macOS：`brew install ffmpeg`）
 - 一个有图形界面的环境用于首次扫码登录（远程机器可通过远程桌面操作）
 
 ## 安装
@@ -103,6 +104,28 @@ Linux 若缺少浏览器系统依赖：`npx playwright install --with-deps chrom
 | `ALBUM_MAX_IMAGES` | `9` | 分享图集最多取几张原图 |
 | `VIDEO_MAX_MB` | `80` | 分享视频下载上限（自动选最小码率 mp4） |
 | `LLM_TIMEOUT_MS` | `90000` | 单次模型请求超时 |
+| `TRANSCRIBE_ENABLED` | `true` | 是否对视频音轨做语音转写 |
+| `TRANSCRIBE_PROVIDER` | `auto` | `auto` / `grok` / `openai` |
+| `TRANSCRIBE_MODEL` | （见上表） | 覆盖默认转写模型 |
+| `TRANSCRIBE_LANGUAGE` | — | 语言偏置（如 `zh`）；空=自动检测 |
+| `TRANSCRIBE_MAX_SECONDS` | `600` | 转写前截断音轨秒数；`0`=不截断 |
+
+### 视频音轨转写
+
+视频在抽关键帧之外，还会：
+
+1. `ffmpeg` 抽出单声道 mp3（16 kHz / 64 kbps，可按 `TRANSCRIBE_MAX_SECONDS` 截断）
+2. 调用语音转写 API 得到旁白/对白文本
+3. 把转写拼进多模态「内容理解」prompt，再生成回复
+
+**选用路径（`TRANSCRIBE_PROVIDER=auto`）**：
+
+| 优先级 | 条件 | 接口 | 默认模型 |
+| --- | --- | --- | --- |
+| 1 | 配置了 `GROK_API_KEY` | xAI `POST /v1/stt` | `grok-voice-transcribe-2.0` |
+| 2 | 配置了 `OPENAI_API_KEY` | OpenAI 兼容 `POST /v1/audio/transcriptions` | `whisper-1` |
+
+无音轨、无明显语音（仅 BGM）、或未配置密钥时会在日志里标明 skip，不阻断关键帧理解。转写结果缓存为 `data/media/**/video.transcript.txt`（旁路 `.transcript.json`）。
 
 ### 关于「回复自己」
 
@@ -120,7 +143,8 @@ Linux 若缺少浏览器系统依赖：`npx playwright install --with-deps chrom
 - [x] 视频/图集分享卡片：解析 `multi/aweme/detail` 拿真实 `play_addr` / 图集原图（`src/douyin/aweme.ts`；调试：`npx tsx scripts/resolve-aweme.ts <id> [video|note]`）
 - [ ] 实况图（live photo）里的短视频、图集配乐
 - [ ] 解码 `imapi.douyin.com` protobuf（`get_by_conversation` / `get_message_by_init`）替代 DOM 解析
-- [ ] 语音消息、视频音轨转写（Whisper 等）
+- [x] 视频音轨转写（Grok STT `/v1/stt`，OpenAI Whisper 兜底；`src/douyin/transcribe.ts`）
+- [ ] 语音消息转写
 - [ ] 每个会话的长期记忆 / 人设
 - [ ] 回复频率限制、夜间静默、人工接管开关
 

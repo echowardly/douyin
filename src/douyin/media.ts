@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import type { ContentPart, LLMProvider } from '../providers/types.js';
 import { resolveAweme, type ResolvedAweme } from './aweme.js';
 import type { DouyinMessage, MediaRef } from './messages.js';
+import { clipTranscript, transcribeVideoAudio } from './transcribe.js';
 
 const run = promisify(execFile);
 const REFERER = { referer: 'https://www.douyin.com/' };
@@ -117,6 +118,31 @@ function shareHeader(a: ResolvedAweme): string {
   return `[分享作品 ${a.id}｜${meta.trim()}｜作者 @${a.author ?? '未知'}${a.musicTitle ? `｜配乐 ${a.musicTitle}` : ''}]\n作品文案：${a.desc || '(无)'}`;
 }
 
+
+/** 视频关键帧之后追加音轨转写文本片段（无语音则注明 skip）。 */
+async function appendTranscriptParts(parts: ContentPart[], videoFile: string): Promise<void> {
+  const tr = await transcribeVideoAudio(videoFile);
+  if (tr.skipped) {
+    parts.push({ type: 'text', text: `[音轨转写：跳过（${tr.skipped}）]` });
+    return;
+  }
+  if (!tr.text) {
+    parts.push({ type: 'text', text: '[音轨转写：空]' });
+    return;
+  }
+  const clipped = clipTranscript(tr.text);
+  const meta = [
+    tr.language ? `语言 ${tr.language}` : '',
+    tr.durationSec != null ? `${tr.durationSec}s` : '',
+  ]
+    .filter(Boolean)
+    .join('，');
+  parts.push({
+    type: 'text',
+    text: `[音轨转写${meta ? `｜${meta}` : ''}]\n${clipped}`,
+  });
+}
+
 /**
  * 分享卡片 → 真实内容：视频下载最小码率 mp4 并抽关键帧；图集下载前 N 张原图。
  * 文件落在 data/media/aweme-<id>/，重复消息直接复用。
@@ -141,6 +167,7 @@ async function shareToParts(context: BrowserContext, ref: MediaRef): Promise<Con
     console.log(`[media] 作品 ${id}：真实视频 ${path.relative(process.cwd(), video)} → 关键帧 ×${frames.length}`);
     parts.push({ type: 'text', text: `[视频关键帧 ×${frames.length}，按时间顺序，取自原视频]` });
     for (const f of frames) parts.push(await imagePart(f, 'low'));
+    await appendTranscriptParts(parts, video);
   } else {
     const picks = a.images.slice(0, config.reply.albumMaxImages);
     let ok = 0;
@@ -190,7 +217,7 @@ export async function mediaToParts(context: BrowserContext, msg: DouyinMessage):
         const frames = await extractVideoFrames(saved.file);
         parts.push({ type: 'text', text: `[视频关键帧 ×${frames.length}，按时间顺序]` });
         for (const f of frames) parts.push(await imagePart(f, 'low'));
-        // TODO: 音轨转写（Whisper 等）可显著提升理解，后续接入
+        await appendTranscriptParts(parts, saved.file);
       }
     } catch (e) {
       parts.push({ type: 'text', text: `[媒体处理失败：${(e as Error).message}]` });
@@ -204,14 +231,15 @@ export async function describeMedia(provider: LLMProvider, parts: ContentPart[],
   const images = parts.filter((p) => p.type === 'image').length;
   const text = parts.map((p) => (p.type === 'text' ? p.text : '')).filter(Boolean).join('\n');
   if (!images) return text;
-  const tags = parts.flatMap((p) => (p.type === 'text' ? (p.text.match(/^\[(视频关键帧[^\]]*|图集第[^\]]*|分享作品[^｜\]]*)/) ?? []).slice(1) : []));
-  console.log(`[describe] 图片输入 ×${images}（${[...new Set(tags.map((t) => t.replace(/第 \d+\/(\d+) 张/, '共 $1 张')))].join('；') || '普通图片'}）`);
+  const tags = parts.flatMap((p) => (p.type === 'text' ? (p.text.match(/^\[(视频关键帧[^\]]*|图集第[^\]]*|分享作品[^｜\]]*|音轨转写[^\]]*)/) ?? []).slice(1) : []));
+  const hasTranscript = parts.some((p) => p.type === 'text' && p.text.startsWith('[音轨转写'));
+  console.log(`[describe] 图片输入 ×${images}${hasTranscript ? ' + 音轨转写' : ''}（${[...new Set(tags.map((t) => t.replace(/第 \d+\/(\d+) 张/, '共 $1 张')))].join('；') || '普通图片'}）`);
   const desc = await provider.chat(
     [
       {
         role: 'system',
         content:
-          '你是内容理解助手。输入可能是抖音分享作品的文案 + 视频关键帧（按时间顺序）或图集原图。请用中文简洁客观地描述内容、主题、人物、场景、画面文字（OCR 要点）、情绪与看点，不超过 250 字。',
+          '你是内容理解助手。输入可能是抖音分享作品的文案 + 视频关键帧（按时间顺序）或图集原图，以及「音轨转写」里的旁白/对白原文。请用中文简洁客观地描述内容、主题、人物、场景、画面文字（OCR 要点）、台词要点、情绪与看点，不超过 280 字；有转写时优先引用关键对白，不要编造转写里没有的话。',
       },
       { role: 'user', content: [...(hint ? [{ type: 'text' as const, text: hint }] : []), ...parts] },
     ],

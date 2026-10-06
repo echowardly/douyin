@@ -32,6 +32,17 @@ const EnvSchema = z.object({
   ALBUM_MAX_IMAGES: z.coerce.number().int().min(1).max(35).default(9),
   VIDEO_MAX_MB: z.coerce.number().positive().default(80),
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(90000),
+
+  /** 是否对视频音轨做语音转写（默认开） */
+  TRANSCRIBE_ENABLED: bool,
+  /** auto | grok | openai；auto = 有 GROK_API_KEY 用 Grok STT，否则 OpenAI Whisper */
+  TRANSCRIBE_PROVIDER: z.enum(['auto', 'grok', 'openai']).default('auto'),
+  /** 覆盖默认模型：Grok 默认 grok-voice-transcribe-2.0，OpenAI 默认 whisper-1 */
+  TRANSCRIBE_MODEL: z.preprocess(emptyToUndef, z.string().optional()),
+  /** 语言偏置，如 zh / en；留空则自动检测。Grok 在设了 language 时顺带开 format */
+  TRANSCRIBE_LANGUAGE: z.preprocess(emptyToUndef, z.string().optional()),
+  /** 转写前截断音轨秒数；0 = 不截断 */
+  TRANSCRIBE_MAX_SECONDS: z.coerce.number().int().min(0).default(600),
 });
 
 const env = EnvSchema.parse(process.env);
@@ -60,6 +71,12 @@ export const config = {
     albumMaxImages: env.ALBUM_MAX_IMAGES,
     /** 分享视频下载体积上限（MB），超出则只用封面 */
     videoMaxMb: env.VIDEO_MAX_MB,
+    /** 视频音轨转写 */
+    transcribeEnabled: env.TRANSCRIBE_ENABLED ?? true,
+    transcribeProvider: env.TRANSCRIBE_PROVIDER,
+    transcribeModel: env.TRANSCRIBE_MODEL,
+    transcribeLanguage: env.TRANSCRIBE_LANGUAGE,
+    transcribeMaxSeconds: env.TRANSCRIBE_MAX_SECONDS,
   },
 } as const;
 
